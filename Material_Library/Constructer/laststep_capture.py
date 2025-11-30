@@ -516,6 +516,23 @@ def map_chunks_to_token_indices(
 
     return mapping
 
+def hash_tensor(t):
+    return torch.sum(t.float() * 1e6).item()
+def find_strict_duplicates(tensor):
+    hash_table = {}
+    duplicates = []
+
+    for i in range(tensor.shape[0]):
+        h = hash_tensor(tensor[i])
+        
+        if h in hash_table:
+            # 二次验证（避免 hash 碰撞）
+            if torch.equal(tensor[i], tensor[hash_table[h]]):
+                duplicates.append((hash_table[h], i))
+        else:
+            hash_table[h] = i
+
+    return duplicates
 
 
 def construct_region_item(
@@ -643,8 +660,11 @@ def construct_region_item(
             h_chunk = hid_use[idx_on_dev]     # [K_i, C]
             per_step_hidden.append(h_chunk)
 
-        # [T, K_i, C]
-        hidden_all_steps = torch.stack(per_step_hidden, dim=0)
+        hidden_all_steps = torch.stack(per_step_hidden,dim=0)
+        print("hidden_all_steps shape in construct",hidden_all_steps.shape)
+        dups = find_strict_duplicates(hidden_all_steps)
+
+        print("检测结果:", dups if dups else "无重复")
 
         chunk_hidden[chunk] = hidden_all_steps.detach().cpu()
         chunk_patch_indices[chunk] = selected_idx.detach().cpu().long()
@@ -688,6 +708,9 @@ if __name__ == "__main__":
         guidance_scale=4.0,
         generator=gen,
     )
+
+    for i in range(5):
+        print(i, hidden_sink[i]["tag"])
 
     # 4) 读取 cross-attn（只保留了最后一步）
     assert attn_sink, "❌ 没捕到注意力：检查层名 / 是否 cross-attn / 是否正确 patch"
@@ -816,7 +839,6 @@ if __name__ == "__main__":
     plt.close()
     print(f"✔️ patch mask 已保存为: {save_path}")
 
-    # ------------- 导出 region cache 为 JSON -------------
     # 这里的 hidden_tensor 形状是 [T, K_i, C]，indices 是 [K_i]
     os.makedirs("./cache/chunks", exist_ok=True)
     for region_name, h in chunk_hidden.items():
