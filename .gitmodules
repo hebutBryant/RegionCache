@@ -1,0 +1,3 @@
+[submodule "third-party/diffusers"]
+	path = third-party/diffusers
+	url = https://github.com/hebutBryant/diffusers.git
