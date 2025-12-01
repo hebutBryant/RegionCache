@@ -1,0 +1,12 @@
+LICENSE
+README.md
+setup.py
+src/clip_score/__init__.py
+src/clip_score/__main__.py
+src/clip_score/clip_score.py
+src/clip_score.egg-info/PKG-INFO
+src/clip_score.egg-info/SOURCES.txt
+src/clip_score.egg-info/dependency_links.txt
+src/clip_score.egg-info/entry_points.txt
+src/clip_score.egg-info/requires.txt
+src/clip_score.egg-info/top_level.txt
