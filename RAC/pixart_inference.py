@@ -94,8 +94,8 @@ def update_pixart_pipeline_rac(pipeline):
     for block in blocks:
         if hasattr(block, "attn1"):
             block.attn1.set_processor(ReuseAttnProcessor())
-        if hasattr(block, "attn2"):
-            block.attn2.set_processor(ReuseAttnProcessor())
+        # if hasattr(block, "attn2"):
+        #     block.attn2.set_processor(ReuseAttnProcessor())
         if hasattr(block, "attn"):
             block.attn.set_processor(ReuseAttnProcessor())
 
