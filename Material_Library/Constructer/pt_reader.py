@@ -81,3 +81,4 @@ def load_region_cache(pt_path: str) -> Dict[str, Any]:
 if __name__ == "__main__":
     region = load_region_cache(path)
     print("📌 prompt:", region["prompt"])
+    print(region["hidden_state"].shape)

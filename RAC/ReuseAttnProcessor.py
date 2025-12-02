@@ -1,6 +1,8 @@
 import os
 import sys
 import torch.nn.functional as F
+import sys, os
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from Material_Library.Constructer.pt_reader import load_region_cache
 
 import torch
@@ -9,6 +11,7 @@ from typing import Optional
 from diffusers.models.attention import Attention
 from diffusers.models.attention_processor import AttnProcessor2_0
 from typing import Sequence, Union, Optional
+
 
 
 def prepare_attn_mask(
@@ -237,16 +240,39 @@ class ReuseAttnProcessor:
         hidden_states: torch.Tensor,
         encoder_hidden_states: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
-        region_indices: Optional[Union[Sequence[int], torch.Tensor]] = None,
-        cached_hidden_states: Optional[torch.Tensor] = None,
         temb: Optional[torch.Tensor] = None,
         *args,
         **kwargs,
     ) -> torch.Tensor:
+        # ====== 1) 处理废弃的 scale 参数（可能从 cross_attention_kwargs 里传进来） ======
         if len(args) > 0 or kwargs.get("scale", None) is not None:
-            deprecation_message = "The `scale` argument is deprecated and will be ignored. Please remove it, as passing it will raise an error in the future. `scale` should directly be passed while calling the underlying pipeline component i.e., via `cross_attention_kwargs`."
+            deprecation_message = (
+                "The `scale` argument is deprecated and will be ignored. Please remove it, as passing it will "
+                "raise an error in the future. `scale` should directly be passed while calling the underlying "
+                "pipeline component i.e., via `cross_attention_kwargs`."
+            )
             deprecate("scale", "1.0.0", deprecation_message)
+            # 不用的话就弹掉，避免后面继续往下传
+            kwargs.pop("scale", None)
+        if encoder_hidden_states is None:
+            attn_type = "SELF-ATTENTION"
+        else:
+            attn_type = "CROSS-ATTENTION"
 
+        print(f"\n===== [{attn_type}] =====")
+        print(f"[Attention] Received ReuseAttnProcessor keys: {list(kwargs.keys())}")
+        # ====== 2) 从 kwargs 中取出 region cache 相关参数 ======
+        # 标准键名：region_indices + cached_hidden_states
+        region_indices = kwargs.pop("region_indices", None)
+        cached_hidden_states = kwargs.pop("block_cache", None)
+        print("######################region_indices in ReuseAttnProcessor#########################",region_indices.shape)
+        print("######################cached_hidden_states in ReuseAttnProcessor#########################",cached_hidden_states.shape)
+
+
+        # 其余 kwargs（如果有）可以继续往下传给别的逻辑，
+        # 目前这个 Processor 自己不用再管 kwargs 了
+
+        # ====== 3) 原有逻辑开始 ======
         residual = hidden_states
         if attn.spatial_norm is not None:
             hidden_states = attn.spatial_norm(hidden_states, temb)
@@ -261,58 +287,28 @@ class ReuseAttnProcessor:
             hidden_states.shape if encoder_hidden_states is None else encoder_hidden_states.shape
         )
 
-        if attention_mask is not None:
+        if attention_mask is not None and encoder_hidden_states is not None:
             attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
             attention_mask = attention_mask.view(batch_size, attn.heads, -1, attention_mask.shape[-1])
 
-        # ===== (3) group_norm =====
+        # (3) group_norm
         if attn.group_norm is not None:
             hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
 
-
         
-        # ===== (4) ⭐ 在这里做 region cache 覆盖，再去算 Q/K/V ⭐ =====
-        if (cached_hidden_states is not None) and (region_indices is not None):
-            # 目前只考虑 [B, L, C] 的 hidden_states
-            if hidden_states.ndim != 3:
-                raise NotImplementedError(
-                    "Region cache 目前只支持 [batch, seq_len, dim] 形状的 hidden_states；"
-                    "如果你在 UNet 2D attn 上使用，请在 flatten 之后再做 cache。"
-                )
-
-            # 规范 index
-            if isinstance(region_indices, torch.Tensor):
-                idx = region_indices.view(-1).long()
-            else:
-                idx = torch.as_tensor(list(region_indices), dtype=torch.long, device=hidden_states.device)
-
-            B, L, C = hidden_states.shape
-            if cached_hidden_states.shape != hidden_states.shape:
-                raise ValueError(
-                    f"cached_hidden_states.shape={cached_hidden_states.shape} 与当前 hidden_states.shape={hidden_states.shape} 不一致，"
-                    "请确保 cache 来自同一层、同一 shape。"
-                )
-
-            if idx.numel() > 0:
-                max_pos = int(idx.max().item())
-                if max_pos >= L:
-                    raise ValueError(f"region_indices 最大值 {max_pos} 超过当前序列长度 L={L}")
-
-                # 用 cache 覆盖这些 token 的输入 hidden
-                hidden_states[:, idx, :] = cached_hidden_states[:, idx, :]
-
-        
-        
-        attention_mask = prepare_attn_mask(region_indices=region_indices,num_tokens = hidden_states.shape[1])
-
         query = attn.to_q(hidden_states)
 
+
+
+
         if encoder_hidden_states is None:
-            # self-attention 情况：你的原版逻辑是强行给一个全 True 的 attention_mask
+            # self-attention 情况：构造一个全 True 的 attention_mask
             B, N, _ = hidden_states.shape
-            attention_mask = torch.ones((B, N), dtype=torch.bool, device=hidden_states.device)
-            attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
-            attention_mask = attention_mask.view(batch_size, attn.heads, -1, attention_mask.shape[-1])
+            print("###########sequence_length#############",sequence_length)
+            attention_mask = prepare_attn_mask(region_indices=region_indices, num_tokens=sequence_length,device="cuda:1")
+            print(f"Attention mask shape: {attention_mask.shape}")
+            # attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
+            attention_mask = attention_mask.expand(batch_size, attn.heads, attention_mask.size(-2), attention_mask.size(-1))
 
             encoder_hidden_states = hidden_states
         elif attn.norm_cross:
@@ -335,6 +331,12 @@ class ReuseAttnProcessor:
             key = attn.norm_k(key)
 
         # SDPA
+        if attention_mask is None:
+            print("Attention mask: None")
+        else:
+            print(f"Attention mask shape: {attention_mask.shape}")
+
+
         hidden_states = F.scaled_dot_product_attention(
             query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
         )
@@ -357,9 +359,64 @@ class ReuseAttnProcessor:
 
         hidden_states = hidden_states / attn.rescale_output_factor
 
-        return hidden_states
-        
 
+        # (4) ⭐ 在这里做 region cache 覆盖，再去算 Q/K/V ⭐
+        # 这里 region cache 的形状为 [region_len, hidden_dim]
+        # 框架中的 hidden_states 形状为 [batch_size, token_num, hidden_dim]
+        if (cached_hidden_states is not None) and (region_indices is not None):
+            if hidden_states.ndim != 3:
+                raise NotImplementedError(
+                    "Region cache 目前只支持 [batch, seq_len, dim] 形状的 hidden_states；"
+                    "如果你在 UNet 2D attn 上使用，请在 flatten 之后再做 cache。"
+                )
+
+            # 规范 index
+            if isinstance(region_indices, torch.Tensor):
+                idx = region_indices.view(-1).long().to(hidden_states.device)
+            else:
+                idx = torch.as_tensor(list(region_indices), dtype=torch.long, device=hidden_states.device)
+
+            B, L, C = hidden_states.shape
+
+            if idx.numel() > 0:
+                max_pos = int(idx.max().item())
+                if max_pos >= L:
+                    raise ValueError(f"region_indices 最大值 {max_pos} 超过当前序列长度 L={L}")
+
+            # ====== 情况 1：cache 已经是 [B, L, C]，和 hidden_states 完全对齐（原逻辑） ======
+            if cached_hidden_states.dim() == 3 and cached_hidden_states.shape == hidden_states.shape:
+                if idx.numel() > 0:
+                    hidden_states[:, idx, :] = cached_hidden_states[:, idx, :]
+
+            # ====== 情况 2：region cache 是 [K, C]，没有 batch 维（你现在的设计） ======
+            elif cached_hidden_states.dim() == 2:
+                K, C_cache = cached_hidden_states.shape
+                if C_cache != C:
+                    raise ValueError(
+                        f"cached_hidden_states 隐维不匹配: C_cache={C_cache}, C={C}."
+                    )
+                if K != idx.numel():
+                    raise ValueError(
+                        f"region_cache 的长度 K={K} 与 region_indices 中的 token 数 {idx.numel()} 不一致。"
+                    )
+
+                # 扩展到 [B, K, C]，对每个 batch 复用同一份 region cache
+                cache_expanded = cached_hidden_states.to(hidden_states.device, hidden_states.dtype)
+                cache_expanded = cache_expanded.unsqueeze(0).expand(B, -1, -1)  # [B, K, C]
+
+                # 把每个 batch 对应的这些 token 都替换掉
+                if idx.numel() > 0:
+                    hidden_states[:, idx, :] = cache_expanded
+
+            else:
+                raise ValueError(
+                    f"不支持的 cached_hidden_states.shape={cached_hidden_states.shape}；"
+                    "期望 [B, L, C] 或 [K, C]。"
+                )
+
+        # 这里你还根据 region_indices 重新构造了一个 attention_mask
+
+        return hidden_states
 
 
 
