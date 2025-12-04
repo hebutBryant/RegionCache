@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import torch.nn.functional as F
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
@@ -259,14 +260,14 @@ class ReuseAttnProcessor:
         else:
             attn_type = "CROSS-ATTENTION"
 
-        print(f"\n===== [{attn_type}] =====")
-        print(f"[Attention] Received ReuseAttnProcessor keys: {list(kwargs.keys())}")
+        # print(f"\n===== [{attn_type}] =====")
+        # print(f"[Attention] Received ReuseAttnProcessor keys: {list(kwargs.keys())}")
         # ====== 2) 从 kwargs 中取出 region cache 相关参数 ======
         # 标准键名：region_indices + cached_hidden_states
         region_indices = kwargs.pop("region_indices", None)
         cached_hidden_states = kwargs.pop("block_cache", None)
-        print("######################region_indices in ReuseAttnProcessor#########################",region_indices.shape)
-        print("######################cached_hidden_states in ReuseAttnProcessor#########################",cached_hidden_states.shape)
+        # print("######################region_indices in ReuseAttnProcessor#########################",region_indices.shape)
+        # print("######################cached_hidden_states in ReuseAttnProcessor#########################",cached_hidden_states.shape)
 
 
         # 其余 kwargs（如果有）可以继续往下传给别的逻辑，
@@ -304,9 +305,9 @@ class ReuseAttnProcessor:
         if encoder_hidden_states is None:
             # self-attention 情况：构造一个全 True 的 attention_mask
             B, N, _ = hidden_states.shape
-            print("###########sequence_length#############",sequence_length)
+            # print("###########sequence_length#############",sequence_length)
             attention_mask = prepare_attn_mask(region_indices=region_indices, num_tokens=sequence_length,device="cuda:1")
-            print(f"Attention mask shape: {attention_mask.shape}")
+            # print(f"Attention mask shape: {attention_mask.shape}")
             # attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
             attention_mask = attention_mask.expand(batch_size, attn.heads, attention_mask.size(-2), attention_mask.size(-1))
 
@@ -336,10 +337,16 @@ class ReuseAttnProcessor:
         else:
             print(f"Attention mask shape: {attention_mask.shape}")
 
+        torch.cuda.synchronize()
+        t0 = time.time()
 
         hidden_states = F.scaled_dot_product_attention(
             query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
         )
+        torch.cuda.synchronize()
+        t1 = time.time()
+
+        print(f"[SDPA time] scaled_dot_product_attention 耗时: {(t1 - t0)*1000:.3f} ms")
 
         # [B,H,L,D] -> [B,L,H*D]
         hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
