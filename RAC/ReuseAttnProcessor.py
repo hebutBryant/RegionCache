@@ -242,6 +242,8 @@ class ReuseAttnProcessor:
         encoder_hidden_states: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         temb: Optional[torch.Tensor] = None,
+        step_cache: Optional[torch.Tensor] = None,
+        region_indices: Optional[torch.Tensor] = None,
         *args,
         **kwargs,
     ) -> torch.Tensor:
@@ -255,19 +257,29 @@ class ReuseAttnProcessor:
             deprecate("scale", "1.0.0", deprecation_message)
             # 不用的话就弹掉，避免后面继续往下传
             kwargs.pop("scale", None)
+        if step_cache is None:
+            step_cache = kwargs.pop("block_cache", None)
+        
+        # 统一变量名
+        cached_hidden_states = step_cache
+
+        # 只有当 cache 和 indices 都有值时，才启用复用逻辑
+        is_reusing = (cached_hidden_states is not None) and (region_indices is not None)
+
         if encoder_hidden_states is None:
             attn_type = "SELF-ATTENTION"
         else:
             attn_type = "CROSS-ATTENTION"
 
-        # print(f"\n===== [{attn_type}] =====")
-        # print(f"[Attention] Received ReuseAttnProcessor keys: {list(kwargs.keys())}")
+        print(f"\n===== [{attn_type}] =====")
+        print(f"[Attention] Received ReuseAttnProcessor keys: {list(kwargs.keys())}")
         # ====== 2) 从 kwargs 中取出 region cache 相关参数 ======
         # 标准键名：region_indices + cached_hidden_states
-        region_indices = kwargs.pop("region_indices", None)
-        cached_hidden_states = kwargs.pop("block_cache", None)
-        # print("######################region_indices in ReuseAttnProcessor#########################",region_indices.shape)
-        # print("######################cached_hidden_states in ReuseAttnProcessor#########################",cached_hidden_states.shape)
+        ###
+        if(region_indices is not None):
+            print("######################region_indices in ReuseAttnProcessor#########################",region_indices.shape)
+        if(cached_hidden_states is not None):
+            print("######################cached_hidden_states in ReuseAttnProcessor#########################",cached_hidden_states.shape)
 
 
         # 其余 kwargs（如果有）可以继续往下传给别的逻辑，
@@ -303,13 +315,21 @@ class ReuseAttnProcessor:
 
 
         if encoder_hidden_states is None:
-            # self-attention 情况：构造一个全 True 的 attention_mask
-            B, N, _ = hidden_states.shape
-            # print("###########sequence_length#############",sequence_length)
-            attention_mask = prepare_attn_mask(region_indices=region_indices, num_tokens=sequence_length,device="cuda:1")
-            # print(f"Attention mask shape: {attention_mask.shape}")
-            # attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
-            attention_mask = attention_mask.expand(batch_size, attn.heads, attention_mask.size(-2), attention_mask.size(-1))
+            if is_reusing:
+                # self-attention 情况：构造一个全 True 的 attention_mask
+                B, N, _ = hidden_states.shape
+                print("###########sequence_length#############",sequence_length)
+                attention_mask = prepare_attn_mask(region_indices=region_indices, num_tokens=sequence_length,device="cuda:1")
+                print(f"Attention mask shape: {attention_mask.shape}")
+                # attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
+                attention_mask = attention_mask.expand(batch_size, attn.heads, attention_mask.size(-2), attention_mask.size(-1))
+
+            else:
+                if attention_mask is not None:
+                    if attention_mask.shape[-1] != query.shape[1]:
+                        target_length = query.shape[1]
+                        attention_mask = F.pad(attention_mask, (0, target_length - attention_mask.shape[-1]))
+                        attention_mask = attention_mask.repeat(batch_size, 1, 1, 1)
 
             encoder_hidden_states = hidden_states
         elif attn.norm_cross:
@@ -337,8 +357,6 @@ class ReuseAttnProcessor:
         else:
             print(f"Attention mask shape: {attention_mask.shape}")
 
-        torch.cuda.synchronize()
-        t0 = time.time()
 
         hidden_states = F.scaled_dot_product_attention(
             query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
@@ -370,7 +388,7 @@ class ReuseAttnProcessor:
         # (4) ⭐ 在这里做 region cache 覆盖，再去算 Q/K/V ⭐
         # 这里 region cache 的形状为 [region_len, hidden_dim]
         # 框架中的 hidden_states 形状为 [batch_size, token_num, hidden_dim]
-        if (cached_hidden_states is not None) and (region_indices is not None):
+        if is_reusing:
             if hidden_states.ndim != 3:
                 raise NotImplementedError(
                     "Region cache 目前只支持 [batch, seq_len, dim] 形状的 hidden_states；"
@@ -424,18 +442,6 @@ class ReuseAttnProcessor:
         # 这里你还根据 region_indices 重新构造了一个 attention_mask
 
         return hidden_states
-
-
-
-
-
-
-
-
-
-
-
-
 
 if __name__ == "__main__":
     path = "/home/lipz/RegionCache/Material_Library/Constructer/cache/chunks/a_cat.pt"

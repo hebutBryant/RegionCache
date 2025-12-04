@@ -84,23 +84,23 @@ def get_cache_simulate(cache_path=cache_file, dtype=torch.float16, device="cpu")
     print(f"📦 成功加载 region cache ({len(cache)} 个区域) from: {cache_path}")
     return cache
 
-def update_pixart_pipeline_rac(pipeline):
-    transformer = pipeline.transformer
-    blocks = []
-    if hasattr(transformer, "layers"):
-        blocks = transformer.layers
-    elif hasattr(transformer, "transformer_blocks"):
-        blocks = transformer.transformer_blocks
+def update_pixart_transformer_rac(transformer):
+        blocks = []
+        if hasattr(transformer, "layers"):
+            blocks = transformer.layers
+        elif hasattr(transformer, "transformer_blocks"):
+            blocks = transformer.transformer_blocks
 
-    for block in blocks:
-        if hasattr(block, "attn1"):
-            block.attn1.set_processor(ReuseAttnProcessor())
-        # if hasattr(block, "attn2"):
-        #     block.attn2.set_processor(ReuseAttnProcessor())
-        if hasattr(block, "attn"):
-            block.attn.set_processor(ReuseAttnProcessor())
+        for block in blocks:
+            if hasattr(block, "attn1"):
+                block.attn1.set_processor(ReuseAttnProcessor())
+            # if hasattr(block, "attn2"):
+            #     block.attn2.set_processor(ReuseAttnProcessor())
+            if hasattr(block, "attn"):
+                block.attn.set_processor(ReuseAttnProcessor())
+        
 
-    return pipeline
+        return transformer
 
 
 
@@ -111,7 +111,9 @@ if __name__ == "__main__":
     MODEL_PATH,
     torch_dtype=DTYPE,
     ).to(DEVICE)
-    pipe = update_pixart_pipeline_rac(pipe)
+    
+    update_pixart_transformer_rac(pipe.transformer)
+    
     print("pipe.__call__ 绑定方法：", pipe.__call__)
     print("底层函数对象：", pipe.__call__.__func__)
 
@@ -157,6 +159,8 @@ if __name__ == "__main__":
     print("############## Merged Hidden Cache ####################", merged_hidden_cache.shape)
     print("############## Merged Region Indices ####################", merged_region_indices.shape)
 
+    my_update_steps = [0,1,2,13]
+
     with torch.no_grad():
         out = pipe(
             prompt=PROMPT,
@@ -167,6 +171,7 @@ if __name__ == "__main__":
             cached_hidden_states=merged_hidden_cache,       # [num_steps, num_layers, K, C] or 你定义的形状
             region_indices=merged_region_indices,
             generator=gen,   # [K]
+            update_steps=my_update_steps,
         )
     
 
