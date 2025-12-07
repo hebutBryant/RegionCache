@@ -111,7 +111,9 @@ def rac_forward(
             # 当前 block 的 cache: [K, D]
             block_ca_kwargs["block_cache"] = step_cache[block_idx]
         print(f"[Attention] Received block_ca_kwargs keys: {list(block_ca_kwargs.keys())}")
-        print("block_ca_kwargs keys:",region_indices.shape,step_cache[block_idx].shape)
+        ###
+        if(step_cache is not None and region_indices is not None):
+            print(f"[Attention] block {block_idx} block_cache shape: {block_ca_kwargs['block_cache'].shape}, region_indices shape: {block_ca_kwargs['region_indices'].shape}")
 
         if torch.is_grad_enabled() and self.gradient_checkpointing:
             hidden_states = self._gradient_checkpointing_func(
