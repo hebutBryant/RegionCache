@@ -17,7 +17,7 @@ from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.models import PixArtTransformer2DModel
 PixArtTransformer2DModel.__call__ = rac_forward
 DTYPE = torch.float16
-DEVICE = "cuda:1"
+DEVICE = "cuda:0"
 MODEL_PATH = "/home/lipz/xDiT/xDiT/cfs/dit/PixArt-XL-2-1024-MS"
 PROMPT = "a cat on a red chair"
 import json
@@ -105,7 +105,7 @@ def update_pixart_transformer_rac(transformer):
 
 
 if __name__ == "__main__":
-    gen = torch.Generator(device="cuda:1").manual_seed(1234)
+    gen = torch.Generator(device="cuda:0").manual_seed(1234)
 
     pipe = PixArtAlphaPipeline.from_pretrained(
     MODEL_PATH,
@@ -159,7 +159,10 @@ if __name__ == "__main__":
     print("############## Merged Hidden Cache ####################", merged_hidden_cache.shape)
     print("############## Merged Region Indices ####################", merged_region_indices.shape)
 
-    my_update_steps = [0,1,2,13]
+    my_update_steps = [0,1,2,3,4,5,6,7]
+
+    ReuseAttnProcessor.reset_time()
+
 
     with torch.no_grad():
         out = pipe(
@@ -174,6 +177,8 @@ if __name__ == "__main__":
             update_steps=my_update_steps,
         )
     
+
+    print(f"Total Attention Time: {ReuseAttnProcessor.get_time()} ms")
 
     image = out.images[0]
     image.save("rac_test.png")

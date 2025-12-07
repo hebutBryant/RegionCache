@@ -683,7 +683,7 @@ if __name__ == "__main__":
     pipe = PixArtAlphaPipeline.from_pretrained(
         "/home/lipz/xDiT/xDiT/cfs/dit/PixArt-XL-2-1024-MS",
         torch_dtype=torch.float16,
-    ).to("cuda:1")
+    ).to("cuda:2")
 
     # 1) 替换所有 AttnProcessor2_0，用自定义版本记录 hidden_sink
     restore, hidden_sink = replace_attnprocessor2_0_with_attnprocessor(

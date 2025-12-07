@@ -1,3 +1,8 @@
+try:
+    from .kernel import sparse_query_attention
+except ImportError:
+    # 兼容直接运行脚本的情况
+    from kernel import sparse_query_attention
 import os
 import sys
 import time
@@ -93,6 +98,41 @@ def prepare_attn_mask(
         attn = attn.unsqueeze(0).unsqueeze(0)  # [L,L] -> [1,1,L,L]
 
     return attn
+
+def get_active_indices(region_indices, num_tokens, device):
+    """
+    计算补集：Active = All - Cached(Region)
+    """
+    # 1. 展平并去重 region_indices
+    if isinstance(region_indices, torch.Tensor):
+        cached_idx = region_indices.view(-1).long()
+    else:
+        flat = []
+        for x in region_indices:
+            if isinstance(x, (list, tuple)):
+                flat.extend(list(x))
+            else:
+                flat.append(x)
+        cached_idx = torch.tensor(flat, dtype=torch.long)
+    
+    cached_idx = torch.unique(cached_idx).to(device)
+    
+    # 2. 生成全集
+    all_idx = torch.arange(num_tokens, device=device, dtype=torch.long)
+    
+    # 3. 计算补集 (Active Indices)
+    # 方法：使用 mask 过滤
+    mask = torch.ones(num_tokens, dtype=torch.bool, device=device)
+    if cached_idx.numel() > 0:
+        mask[cached_idx] = False
+    
+    active_indices = all_idx[mask]
+    
+    # 4. 必须排序 (Triton 算子要求)
+    # arange 生成的本来就是有序的，mask 过滤后依然有序，但为了保险：
+    # active_indices, _ = torch.sort(active_indices) 
+    
+    return active_indices
 
 def validate_mask(mask: torch.Tensor, region):
     """
@@ -228,6 +268,20 @@ def deprecate(*args, take_from: Optional[Union[Dict, Any]] = None, standard_warn
 
 
 class ReuseAttnProcessor:
+
+    # 1. [新增] 类变量，用于累计所有层的计算时间
+    total_attn_time = 0.0
+
+    # 2. [新增] 重置时间的方法
+    @classmethod
+    def reset_time(cls):
+        cls.total_attn_time = 0.0   
+
+    # 3. [新增] 获取时间的方法
+    @classmethod
+    def get_time(cls):
+        return cls.total_attn_time
+
     def __init__(self):
         if not hasattr(F, "scaled_dot_product_attention"):
             raise ImportError(
@@ -311,15 +365,12 @@ class ReuseAttnProcessor:
         
         query = attn.to_q(hidden_states)
 
-
-
-
         if encoder_hidden_states is None:
             if is_reusing:
                 # self-attention 情况：构造一个全 True 的 attention_mask
                 B, N, _ = hidden_states.shape
                 print("###########sequence_length#############",sequence_length)
-                attention_mask = prepare_attn_mask(region_indices=region_indices, num_tokens=sequence_length,device="cuda:1")
+                attention_mask = prepare_attn_mask(region_indices=region_indices, num_tokens=sequence_length,device=hidden_states.device)
                 print(f"Attention mask shape: {attention_mask.shape}")
                 # attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
                 attention_mask = attention_mask.expand(batch_size, attn.heads, attention_mask.size(-2), attention_mask.size(-1))
@@ -352,19 +403,66 @@ class ReuseAttnProcessor:
             key = attn.norm_k(key)
 
         # SDPA
-        if attention_mask is None:
-            print("Attention mask: None")
+        use_triton_kernel = is_reusing
+
+        if use_triton_kernel:
+
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
+            start_event.record()
+            # 1. 计算 Active Indices (Triton 算子需要知道算哪里)
+            # sequence_length 在前面已经获取到了
+            active_idx = get_active_indices(region_indices, sequence_length, query.device)
+            
+            # 扩展 batch 维度: [Num_Active] -> [Batch, Num_Active]
+            # 假设每个 batch 的 active 区域是一样的
+            active_idx_batch = active_idx.unsqueeze(0).repeat(batch_size, 1).int() # Triton通常喜欢int32
+            
+            # 2. 准备 Scale
+            scale_factor = 1 / (head_dim ** 0.5)
+            
+            # 3. 初始化 Output (作为 buffer)
+            # 我们可以直接用一个全 0 的 tensor，因为冻结区域最后会被 cached_hidden_states 覆盖
+            # 所以这里算出来的 output 只要 active 区域是对的就行，frozen 区域是0也无所谓
+            attn_output = torch.zeros_like(query)
+            
+            # 4. 调用 Kernel
+            # query, key, value shape: [B, H, L, D] -> 需要转为 [B, L, H, D] 传给 Triton
+            q_in = query.transpose(1, 2).contiguous()
+            k_in = key.transpose(1, 2).contiguous()
+            v_in = value.transpose(1, 2).contiguous()
+            out_in = attn_output.transpose(1, 2).contiguous()
+            
+            print(f"[Triton] Launching Sparse Kernel. Active Tokens: {active_idx.numel()}/{sequence_length}")
+            
+            # 调用你的算子
+            sparse_query_attention(
+                q_in, k_in, v_in, 
+                active_idx_batch, 
+                out=out_in, 
+                sm_scale=scale_factor
+            )
+            
+            # 5. 恢复 Shape: [B, L, H, D] -> [B, H, L, D]
+            hidden_states = out_in.transpose(1, 2)
+
+            end_event.record()
+            torch.cuda.synchronize() # 等待 GPU 完成以获取准确时间
+            elapsed = start_event.elapsed_time(end_event) # 获取毫秒数
+            ReuseAttnProcessor.total_attn_time += elapsed # 累加到类变量
         else:
-            print(f"Attention mask shape: {attention_mask.shape}")
+            if attention_mask is None:
+                print("Attention mask: None")
+            else:
+                print(f"Attention mask shape: {attention_mask.shape}")
 
+            hidden_states = F.scaled_dot_product_attention(
+                query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
+            )
+        
 
-        hidden_states = F.scaled_dot_product_attention(
-            query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
-        )
-        torch.cuda.synchronize()
-        t1 = time.time()
+        
 
-        print(f"[SDPA time] scaled_dot_product_attention 耗时: {(t1 - t0)*1000:.3f} ms")
 
         # [B,H,L,D] -> [B,L,H*D]
         hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
