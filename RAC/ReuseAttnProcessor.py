@@ -426,7 +426,7 @@ class ReuseAttnProcessor:
             # 所以这里算出来的 output 只要 active 区域是对的就行，frozen 区域是0也无所谓
             attn_output = torch.zeros_like(query)
             
-            # 4. 调用 Kernel
+            # 4. 调用 Kernel        <<<<<<<<<<<<<<<<<<<<TO DO 优化：保证Indices数组里的索引是单调递增>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
             # query, key, value shape: [B, H, L, D] -> 需要转为 [B, L, H, D] 传给 Triton
             q_in = query.transpose(1, 2).contiguous()
             k_in = key.transpose(1, 2).contiguous()
