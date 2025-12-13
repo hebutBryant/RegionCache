@@ -9,6 +9,7 @@ from diffusers.models.attention_processor import *
 from diffusers.utils import deprecate  # AttnProcessorMe 里用到
 
 import json
+import sys
 import os
 from tqdm import tqdm
 import re
@@ -17,6 +18,11 @@ import math
 import matplotlib.pyplot as plt
 nlp = spacy.load("en_core_web_sm")
 
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+sys.path.append(parent_dir)
+
+from Database.db_manager import RegionDB
 
 class AttnProcessorMe:
     r"""
@@ -101,7 +107,7 @@ class AttnProcessorMe:
         key = attn.head_to_batch_dim(key)
         value = attn.head_to_batch_dim(value)
 
-        attention_probs = attn.get_attention_scores2_0(is_cross, query, key, attention_mask)
+        attention_probs = attn.get_attention_scores2_0(is_cross=is_cross, query=query, key=key, attention_mask=attention_mask)
 
         hidden_states = torch.bmm(attention_probs, value)
         hidden_states = attn.batch_to_head_dim(hidden_states)
@@ -802,6 +808,8 @@ if __name__ == "__main__":
         target_tag_substr=".attn1",
     )
 
+    
+
     # 打印每个 chunk 的 shape：
     #   hidden: [T, K_i, C]    indices: [K_i]
     for chunk, h in chunk_hidden.items():
@@ -839,18 +847,33 @@ if __name__ == "__main__":
     plt.close()
     print(f"✔️ patch mask 已保存为: {save_path}")
 
+    # 初始化 DB
+    db = RegionDB()
+
     # 这里的 hidden_tensor 形状是 [T, K_i, C]，indices 是 [K_i]
     os.makedirs("./cache/chunks", exist_ok=True)
     for region_name, h in chunk_hidden.items():
+        # 获取 indices 并转为 list 方便存储或仅作记录
+        idx_tensor = chunk_patch_indices[region_name]
+        idx_list = idx_tensor.tolist()
+
         save_obj = {
             "prompt": prompt,
             "region_name": region_name,
-            "mapping": mapping.get(region_name, None),
             "hidden_state": h,
             "indices": chunk_patch_indices[region_name],
         }
 
-        pt_path = f"./cache/chunks/{region_name.replace(' ', '_')}.pt"
-        torch.save(save_obj, pt_path)
+        file_name = f"{region_name.replace(' ', '_')}.pt"
+        abs_path = os.path.abspath(f"./cache/chunks/{file_name}")
+
+        torch.save(save_obj, abs_path)
+
+        db.add_region(
+            prompt=prompt,                  # 原始 Prompt，如 "a cat on a red chair"
+            region_name=region_name,        # Chunk 名，如 "a cat"
+            file_path=abs_path,             # 物理路径作为 ID
+            indices_list=idx_list           # 可选：存入 metadata
+        )
 
     print(f"✔ 已分别保存 {len(chunk_hidden)} 个 region 文件到 ./cache/chunks/")
