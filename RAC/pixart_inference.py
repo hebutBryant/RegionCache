@@ -19,10 +19,17 @@ PixArtTransformer2DModel.__call__ = rac_forward
 DTYPE = torch.float16
 DEVICE = "cuda:0"
 MODEL_PATH = "/home/lipz/xDiT/xDiT/cfs/dit/PixArt-XL-2-1024-MS"
-PROMPT = "a cat on a red chair"
+PROMPT = "a dog on a desk"
 import json
+import sys
 import os
 import time
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+sys.path.append(parent_dir)
+
+from Material_Library.Database.db_manager import RegionDB
 
 cache_file = "../Material_Library/Constructer/cache/region_items.json"
 
@@ -73,10 +80,6 @@ class RegionCachePool:
         if len(self.cache) > self.max_size:
             popped_key, _ = self.cache.popitem(last=False)
             print(f"🗑️ Cache Full, Evicting: {os.path.basename(popped_key)}")
-
-# 初始化全局缓存池 (建议放在 if __main__ 外面，或者作为全局单例)
-# max_size 根据你的内存大小设定，比如缓存 10 个常用物体
-REGION_POOL = RegionCachePool(max_size=10, device='cpu')
 
 def get_cache_simulate(cache_path=cache_file, dtype=torch.float16, device="cpu"):
     """
@@ -154,8 +157,6 @@ def update_pixart_transformer_rac(transformer):
 
         return transformer
 
-
-
 if __name__ == "__main__":
     gen = torch.Generator(device="cuda:0").manual_seed(1234)
 
@@ -176,6 +177,18 @@ if __name__ == "__main__":
     cache_paths = [
         "/home/liuhy/RegionCache/Material_Library/Constructer/cache/chunks/a_cat.pt",
         "/home/liuhy/RegionCache/Material_Library/Constructer/cache/chunks/a_red_chair.pt"
+    ]
+
+    # 1. 初始化 DB
+    db = RegionDB()
+    
+    # 2. 初始化带 DB 通信功能的 Pool
+    REGION_POOL = RegionCachePool(max_size=10, device='cpu')
+
+    # 3. 定义我们想要复用的“意图” 
+    user_queries = [
+        "a cat",       # 应该能搜到 "a cat.pt" (如果之前 prompt 是 "a cat on...")
+        "red chair" # 应该能搜到 "a red chair.pt"
     ]
 
     all_hidden_caches = []
@@ -206,32 +219,45 @@ if __name__ == "__main__":
 
     start_load_time = time.time()  ### 计时开始 ###
 
-    for i, path in enumerate(cache_paths):
-        # 加载单个区域
-       # [Step 1] 尝试从池中获取
-        cached_data = REGION_POOL.get(path)
+    for query in user_queries:
+        # A. 从 DB 搜索
+        results = db.search_region(query, n_results=1)
+        
+        if not results:
+            print(f"❌ DB 未找到与 '{query}' 相关的缓存")
+            continue
+            
+        best_match = results[0]
+        file_path = best_match['id']       # 之前存的绝对路径
+        metadata = best_match['metadata']
+        score = best_match['distance']
+        
+        print(f"🎯 Query: '{query}' -> Found: '{metadata['region_name']}' (Score: {score:.4f})")
+        print(f"   Path: {file_path}")
+        print(f"   Current DB Status: {metadata['pool_status']}, Pos: {metadata['virtual_pos']}")
+
+        # B. 尝试从 Pool 获取或加载 
+        cached_data = REGION_POOL.get(file_path)
         
         if cached_data is not None:
-            # Hit! 直接使用内存中的数据
             h_cache, r_indices, info = cached_data
         else:
-            # Miss! 从磁盘加载 
-            h_cache, r_indices, info, _ = load_region_cache_as_tensor(path, num_layers=28)
+            # Miss -> Load from disk
+            if not os.path.exists(file_path):
+                print(f"⚠️ 文件丢失: {file_path}")
+                continue
+                
+            h_cache, r_indices, info, _ = load_region_cache_as_tensor(file_path, num_layers=28)
             
-            # [Step 2] 存入池中 (以便下次复用)
-            REGION_POOL.put(path, (h_cache, r_indices, info))
+            # C. Put into Pool (这里会自动触发 DB update_pool_status)
+            REGION_POOL.put(file_path, (h_cache, r_indices, info))
 
-        # [Step 3] 收集数据 
-        # 但通常 torch.cat 可以处理混合设备，或者我们统一放到 CUDA
-        # 建议：在此处统一转到 GPU 进行 concat
-        
-        # 收集 Tensor
+        # 收集用于推理的数据
         all_hidden_caches.append(h_cache.to(DEVICE, non_blocking=True))
         all_region_indices.append(r_indices.to(DEVICE, non_blocking=True))
         
-        if i == 0:
+        if base_info is None:
             base_info = info
-            print(f"基准配置 (来自第一个文件): Steps={base_info.get('num_inference_steps')}, Scale={base_info.get('guidance_scale')}")
 
     # 2. 执行拼接 (Concatenate)
     # hidden_cache shape: [num_steps, num_layers, num_tokens, dim]
@@ -252,14 +278,11 @@ if __name__ == "__main__":
 
     ReuseAttnProcessor.reset_time()
 
-
     with torch.no_grad():
         out = pipe(
             prompt=PROMPT,
             num_inference_steps=info.get("num_inference_steps", 15),
             guidance_scale=info.get("guidance_scale", 4.0),
-
-            # ⭐ 关键：把 cache 传给 rac__call__
             cached_hidden_states=merged_hidden_cache,       # [num_steps, num_layers, K, C] or 你定义的形状
             region_indices=merged_region_indices,
             generator=gen,   # [K]
