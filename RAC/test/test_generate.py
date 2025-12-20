@@ -11,8 +11,14 @@ pipe = PixArtAlphaPipeline.from_pretrained(
     torch_dtype=torch.float16,
 ).to(device)
 
-# 提示词
-prompt = "There are two lamps above the table and a television below it."
+prompt ="""A sepia-toned classic Mercedes-Benz 2.5L streamlined racing car gleams under soft light, its sleek, aerodynamic body and wire-spoke wheels exuding 1950s motorsport elegance. Displayed at an outdoor vintage event, it’s surrounded by other historic racers and onlookers. The iconic three-pointed star adorns its curved hood. A plaque nearby confirms its identity, capturing automotive history in timeless, polished detail.
+"""
+turn1 = "Zoom in closely on the front and side of the main silver race car"
+
+# prompt = prompt+turn1
+
+# 提示词prompt = "There are two lamps above the table and a television below it."
+# 
 
 # 生成图片
 with torch.no_grad():
