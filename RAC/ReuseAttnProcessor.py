@@ -366,22 +366,6 @@ class ReuseAttnProcessor:
         query = attn.to_q(hidden_states)
 
         if encoder_hidden_states is None:
-            if is_reusing:
-                # self-attention 情况：构造一个全 True 的 attention_mask
-                B, N, _ = hidden_states.shape
-                print("###########sequence_length#############",sequence_length)
-                attention_mask = prepare_attn_mask(region_indices=region_indices, num_tokens=sequence_length,device=hidden_states.device)
-                print(f"Attention mask shape: {attention_mask.shape}")
-                # attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
-                attention_mask = attention_mask.expand(batch_size, attn.heads, attention_mask.size(-2), attention_mask.size(-1))
-
-            else:
-                if attention_mask is not None:
-                    if attention_mask.shape[-1] != query.shape[1]:
-                        target_length = query.shape[1]
-                        attention_mask = F.pad(attention_mask, (0, target_length - attention_mask.shape[-1]))
-                        attention_mask = attention_mask.repeat(batch_size, 1, 1, 1)
-
             encoder_hidden_states = hidden_states
         elif attn.norm_cross:
             encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
@@ -405,11 +389,13 @@ class ReuseAttnProcessor:
         # SDPA
         use_triton_kernel = is_reusing
 
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        start_event.record()
+
+
         if use_triton_kernel:
 
-            start_event = torch.cuda.Event(enable_timing=True)
-            end_event = torch.cuda.Event(enable_timing=True)
-            start_event.record()
             # 1. 计算 Active Indices (Triton 算子需要知道算哪里)
             # sequence_length 在前面已经获取到了
             active_idx = get_active_indices(region_indices, sequence_length, query.device)
@@ -446,10 +432,6 @@ class ReuseAttnProcessor:
             # 5. 恢复 Shape: [B, L, H, D] -> [B, H, L, D]
             hidden_states = out_in.transpose(1, 2)
 
-            end_event.record()
-            torch.cuda.synchronize() # 等待 GPU 完成以获取准确时间
-            elapsed = start_event.elapsed_time(end_event) # 获取毫秒数
-            ReuseAttnProcessor.total_attn_time += elapsed # 累加到类变量
         else:
             if attention_mask is None:
                 print("Attention mask: None")
@@ -459,7 +441,12 @@ class ReuseAttnProcessor:
             hidden_states = F.scaled_dot_product_attention(
                 query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
             )
-        
+
+        end_event.record()
+        torch.cuda.synchronize() 
+        elapsed = start_event.elapsed_time(end_event)
+        print(elapsed)
+        ReuseAttnProcessor.total_attn_time += elapsed # 累加到类变量
 
         
 
