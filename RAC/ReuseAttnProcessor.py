@@ -325,15 +325,15 @@ class ReuseAttnProcessor:
         else:
             attn_type = "CROSS-ATTENTION"
 
-        print(f"\n===== [{attn_type}] =====")
-        print(f"[Attention] Received ReuseAttnProcessor keys: {list(kwargs.keys())}")
+        # print(f"\n===== [{attn_type}] =====")
+        # print(f"[Attention] Received ReuseAttnProcessor keys: {list(kwargs.keys())}")
         # ====== 2) 从 kwargs 中取出 region cache 相关参数 ======
         # 标准键名：region_indices + cached_hidden_states
         ###
-        if(region_indices is not None):
-            print("######################region_indices in ReuseAttnProcessor#########################",region_indices.shape)
-        if(cached_hidden_states is not None):
-            print("######################cached_hidden_states in ReuseAttnProcessor#########################",cached_hidden_states.shape)
+        # if(region_indices is not None):
+        #     print("######################region_indices in ReuseAttnProcessor#########################",region_indices.shape)
+        # if(cached_hidden_states is not None):
+        #     print("######################cached_hidden_states in ReuseAttnProcessor#########################",cached_hidden_states.shape)
 
 
         # 其余 kwargs（如果有）可以继续往下传给别的逻辑，
@@ -366,22 +366,6 @@ class ReuseAttnProcessor:
         query = attn.to_q(hidden_states)
 
         if encoder_hidden_states is None:
-            if is_reusing:
-                # self-attention 情况：构造一个全 True 的 attention_mask
-                B, N, _ = hidden_states.shape
-                print("###########sequence_length#############",sequence_length)
-                attention_mask = prepare_attn_mask(region_indices=region_indices, num_tokens=sequence_length,device=hidden_states.device)
-                print(f"Attention mask shape: {attention_mask.shape}")
-                # attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
-                attention_mask = attention_mask.expand(batch_size, attn.heads, attention_mask.size(-2), attention_mask.size(-1))
-
-            else:
-                if attention_mask is not None:
-                    if attention_mask.shape[-1] != query.shape[1]:
-                        target_length = query.shape[1]
-                        attention_mask = F.pad(attention_mask, (0, target_length - attention_mask.shape[-1]))
-                        attention_mask = attention_mask.repeat(batch_size, 1, 1, 1)
-
             encoder_hidden_states = hidden_states
         elif attn.norm_cross:
             encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)

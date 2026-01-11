@@ -161,10 +161,7 @@ class LatentReuser:
         """
         step, lat = self.bank.load_latest(dtype=self.stepper.cfg.dtype, device=self.stepper.cfg.device)
 
-        # Store back to disk? Not needed here—LatentStepper.run will keep saving subsequent steps.
-        # We reuse resume_from_step logic but avoid double-loading.
-        # To avoid re-loading, temporarily monkey-patch a tiny 'run_from_loaded' path:
-        # For clarity and simplicity, just call resume_from_step.
+
         final_latents, final_img_path = self.resume_from_step(
             step=step,
             new_prompt=new_prompt,

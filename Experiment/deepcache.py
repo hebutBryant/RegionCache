@@ -12,9 +12,9 @@ MODEL_ID = "/home/lipz/xDiT/xDiT/cfs/dit/PixArt-XL-2-1024-MS"
 PROMPT = "a dog on a desk, high quality"
 
 # N=4：每4步做一次 full forward，其他3步直接复用缓存输出（不跑 transformer）
-N = 3
+N = 2
 
-NUM_INFERENCE_STEPS = 20
+NUM_INFERENCE_STEPS = 15
 GUIDANCE_SCALE = 7.0
 SEED = 42
 OUT_PATH = "pixart_deepcache_N_fast.png"

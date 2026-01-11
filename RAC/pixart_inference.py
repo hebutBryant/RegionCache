@@ -158,7 +158,7 @@ def update_pixart_transformer_rac(transformer):
         return transformer
 
 if __name__ == "__main__":
-    gen = torch.Generator(device="cuda:0").manual_seed(1234)
+    gen = torch.Generator(device="cuda:2").manual_seed(1234)
 
     pipe = PixArtAlphaPipeline.from_pretrained(
     MODEL_PATH,
@@ -274,7 +274,7 @@ if __name__ == "__main__":
     print("############## Merged Hidden Cache ####################", merged_hidden_cache.shape)
     print("############## Merged Region Indices ####################", merged_region_indices.shape)
 
-    my_update_steps = [0,1,2,3,4,5,6,7]
+    my_update_steps = [0,1,2,3,4,5,6,7,8,9]
 
     ReuseAttnProcessor.reset_time()
 
